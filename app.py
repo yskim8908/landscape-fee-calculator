@@ -1,15 +1,10 @@
+from pathlib import Path
+from io import BytesIO
+import openpyxl
+import datetime as dt
 import streamlit as st
 import pandas as pd
-import openpyxl                
-from io import BytesIO         
-import datetime as dt          
-
-
-import openpyxl
-import streamlit as st
-
-st.write("🔍 openpyxl version:", openpyxl.__version__)
-
+from openpyxl.styles import Font, Alignment  
 
 def build_cover_excel(template_path="template.xlsx") -> BytesIO:
     wb = openpyxl.load_workbook(template_path)
@@ -23,6 +18,75 @@ def build_cover_excel(template_path="template.xlsx") -> BytesIO:
     ws["G20"].value = f"{용역비:,} 원"
 
     ws["A1"].value = dt.date.today().strftime("%Y-%m-%d")
+
+
+    df = st.session_state.get("df_detail")
+    if df is not None:
+        ws_detail = wb["내역서"]
+        cols = ["공종","규격","수량","단위","총액","노무비","경비","비고"]
+        df_to_write = df.loc[0:6, cols]
+        for ci, col in enumerate(cols, start=1):
+            ws_detail.cell(row=1, column=ci, value=col)
+        for ri, row in enumerate(df_to_write.itertuples(index=False), start=2):
+            for ci, val in enumerate(row, start=1):
+                ws_detail.cell(row=ri, column=ci, value=val)
+
+    ws_person = wb["투입인원 및 내역"]
+    df = st.session_state.get("투입인원DF", pd.DataFrame())
+
+    headers = ["업무구분", "계",
+               "기술사", "특급기술자", "고급기술자",
+               "중급기술자", "초급기술자", "기간"]
+    for col_idx, title in enumerate(headers, start=1):
+        cell = ws_person.cell(row=1, column=col_idx)
+        cell.value = title
+        cell.font = Font(bold=True)             
+        cell.alignment = Alignment(horizontal="center")
+
+    for i, row in df.iterrows():
+        excel_row = i + 2
+        for j, key in enumerate(headers, start=1):
+            ws_person.cell(row=excel_row, column=j, value=row.get(key, ""))
+
+    ws_basis = wb["투입인원수 산정기준"]
+    df_basis = st.session_state.get("기준계산결과", pd.DataFrame())
+
+    if ws_basis.max_row > 1:
+        ws_basis.delete_rows(2, ws_basis.max_row)
+
+    for col_idx, col_name in enumerate(df_basis.columns.tolist(), start=1):
+        cell = ws_basis.cell(row=1, column=col_idx)
+        cell.value = col_name
+
+    for row_idx, row in enumerate(df_basis.itertuples(index=False), start=2):
+        for col_idx, value in enumerate(row, start=1):
+            ws_basis.cell(row=row_idx, column=col_idx, value=value)
+
+    ws_wage = wb["노임단가"]
+    df_wage = st.session_state.get("최종_단가", pd.DataFrame())
+
+    if ws_wage.max_row > 1:
+        ws_wage.delete_rows(2, ws_wage.max_row)
+
+    for col_idx, col_name in enumerate(df_wage.columns.tolist(), start=1):
+        ws_wage.cell(row=1, column=col_idx, value=col_name)
+
+    for r, row in enumerate(df_wage.itertuples(index=False), start=2):
+        for c, val in enumerate(row, start=1):
+            ws_wage.cell(row=r, column=c, value=val)
+
+    ws_ins = wb["손해보험요율"]
+    df_ins = st.session_state.get("보험요율DF", pd.DataFrame())
+
+    if ws_ins.max_row > 1:
+        ws_ins.delete_rows(2, ws_ins.max_row)
+
+    for col_idx, col_name in enumerate(df_ins.columns.tolist(), start=1):
+        ws_ins.cell(row=1, column=col_idx, value=col_name)
+
+    for r, row in enumerate(df_ins.itertuples(index=False), start=2):
+        for c, val in enumerate(row, start=1):
+            ws_ins.cell(row=r, column=c, value=val)
 
     buf = BytesIO()
     wb.save(buf)
@@ -218,6 +282,7 @@ with tab_내역서:
             "공종","규격","수량","단위",
             "총액","노무비","경비","비고"
         ]])
+        st.session_state["df_detail"] = df
 
 with tab_투입인원및내역:
     st.header("투입인원 및 내역")
@@ -243,10 +308,6 @@ with tab_투입인원및내역:
             for idx, row in 결과표.iloc[:half].iterrows():
                 업무 = row["업무구분"]
                 단위 = row["단위"].strip()  # 단위 칼럼 읽어오기
-
-
-
-
 
                 if 단위 == "식":
                     기본값 = 1
@@ -303,8 +364,6 @@ with tab_투입인원및내역:
               .str.strip()
               .astype(float)
         )
-
-
         직급리스트 = ["기술사","특급기술자","고급기술자","중급기술자","초급기술자"]
         건설단가 = {}
         for 직급 in 직급리스트:
@@ -334,6 +393,8 @@ with tab_투입인원및내역:
         sum_계 = 결과표["계"].sum()
 
         st.session_state["직접인건비"] = sum_계
+
+        st.session_state["투입인원DF"] = final_df
 
         st.subheader("📊 기술자별 투입 인원 및 총액")
         st.dataframe(final_df)
@@ -397,6 +458,7 @@ with tab_산정기준:
         표시열 = ["업무구분", "단위"] + sum([[j, f"{j}_계산식"] for j in 직급리스트], [])
         st.dataframe(기준표[표시열])
         st.session_state["기준계산결과"] = 기준표
+
     else:
         st.info("‘조경’과 ‘기본설계’, ‘실시설계’, ‘기본 및 실시설계’ 중 하나를 모두 선택해야 계산이 표시됩니다.")
 
@@ -431,7 +493,9 @@ with tab_손해보험요율:
 
     try:
         공제요율_df = pd.read_csv(insurance_url)
+        st.session_state["보험요율DF"] = 공제요율_df
         st.success("✅ 공제요율 정보를 불러왔습니다.")
+
         st.dataframe(공제요율_df)
     except Exception as e:
         st.error("❌ 공제요율 정보를 불러오지 못했습니다.")
