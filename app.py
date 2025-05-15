@@ -1,95 +1,93 @@
-from pathlib import Path
-from io import BytesIO
-import openpyxl
-import datetime as dt
 import streamlit as st
 import pandas as pd
-from openpyxl.styles import Font, Alignment  
+from io import BytesIO
+import tempfile
+import shutil
+from openpyxl import load_workbook
+import datetime as dt
 
-def build_cover_excel(template_path="template.xlsx") -> BytesIO:
-    wb = openpyxl.load_workbook(template_path)
-    ws = wb["갑지"]
+def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
+    # 1) 템플릿 파일을 안전하게 복사
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    tmp.close()
+    shutil.copy(template_path, tmp.name)
 
-    ws["F10"].value = st.session_state.get("공사명", "")
-    ws["G22"].value = st.session_state.get("발주기관명", "")
-
+    # 2) openpyxl 로 '갑지' 시트만 직접 값 채우기
+    wb = load_workbook(tmp.name)
+    ws_cover = wb["갑지"]
+    ws_cover["D10"].value = st.session_state.get("공사명", "")
+    ws_cover["G22"].value = st.session_state.get("발주기관명", "")
     raw = st.session_state.get("도급예정액", 0)
-    용역비 = int(raw // 1000) * 1000
-    ws["G20"].value = f"{용역비:,} 원"
+    ws_cover["G20"].value = f"{int(raw//1000)*1000:,} 원"
+    ws_cover["A1"].value = dt.date.today().strftime("%Y-%m-%d")
+    wb.save(tmp.name)  # 여긴 openpyxl 방식으로 덮어쓴 뒤 저장
 
-    ws["A1"].value = dt.date.today().strftime("%Y-%m-%d")
+    # 3) pandas ExcelWriter 를 overlay 모드로 열어서
+    #    나머지 시트에 DataFrame 값만 덮어쓰기
+    with pd.ExcelWriter(tmp.name,
+                        engine="openpyxl",
+                        mode="a",
+                        if_sheet_exists="overlay") as writer:
 
+        # A) 내역서
+        df_detail = st.session_state.get("df_detail", pd.DataFrame())
+        if not df_detail.empty:
+            df_detail.to_excel(
+                writer,
+                sheet_name="내역서",
+                index=False,
+                header=False,    # 템플릿의 1행 헤더 아래부터 덮어쓰기
+                startrow=1
+            )
 
-    df = st.session_state.get("df_detail")
-    if df is not None:
-        ws_detail = wb["내역서"]
-        cols = ["공종","규격","수량","단위","총액","노무비","경비","비고"]
-        df_to_write = df.loc[0:6, cols]
-        for ci, col in enumerate(cols, start=1):
-            ws_detail.cell(row=1, column=ci, value=col)
-        for ri, row in enumerate(df_to_write.itertuples(index=False), start=2):
-            for ci, val in enumerate(row, start=1):
-                ws_detail.cell(row=ri, column=ci, value=val)
+        # B) 투입인원 및 내역
+        df_person = st.session_state.get("투입인원DF", pd.DataFrame())
+        if not df_person.empty:
+            df_person.to_excel(
+                writer,
+                sheet_name="투입인원 및 내역",
+                index=False,
+                header=False,
+                startrow=1
+            )
 
-    ws_person = wb["투입인원 및 내역"]
-    df = st.session_state.get("투입인원DF", pd.DataFrame())
+        # C) 투입인원수 산정기준
+        df_basis = st.session_state.get("기준계산결과", pd.DataFrame())
+        if not df_basis.empty:
+            df_basis.to_excel(
+                writer,
+                sheet_name="투입인원수 산정기준",
+                index=False,
+                header=False,
+                startrow=1
+            )
 
-    headers = ["업무구분", "계",
-               "기술사", "특급기술자", "고급기술자",
-               "중급기술자", "초급기술자", "기간"]
-    for col_idx, title in enumerate(headers, start=1):
-        cell = ws_person.cell(row=1, column=col_idx)
-        cell.value = title
-        cell.font = Font(bold=True)             
-        cell.alignment = Alignment(horizontal="center")
+        # D) 노임단가
+        df_wage = st.session_state.get("최종_단가", pd.DataFrame())
+        if not df_wage.empty:
+            df_wage.to_excel(
+                writer,
+                sheet_name="노임단가",
+                index=False,
+                header=False,
+                startrow=1
+            )
 
-    for i, row in df.iterrows():
-        excel_row = i + 2
-        for j, key in enumerate(headers, start=1):
-            ws_person.cell(row=excel_row, column=j, value=row.get(key, ""))
+        # E) 손해보험요율
+        df_ins = st.session_state.get("보험요율DF", pd.DataFrame())
+        if not df_ins.empty:
+            df_ins.to_excel(
+                writer,
+                sheet_name="손해보험요율",
+                index=False,
+                header=False,
+                startrow=1
+            )
 
-    ws_basis = wb["투입인원수 산정기준"]
-    df_basis = st.session_state.get("기준계산결과", pd.DataFrame())
-
-    if ws_basis.max_row > 1:
-        ws_basis.delete_rows(2, ws_basis.max_row)
-
-    for col_idx, col_name in enumerate(df_basis.columns.tolist(), start=1):
-        cell = ws_basis.cell(row=1, column=col_idx)
-        cell.value = col_name
-
-    for row_idx, row in enumerate(df_basis.itertuples(index=False), start=2):
-        for col_idx, value in enumerate(row, start=1):
-            ws_basis.cell(row=row_idx, column=col_idx, value=value)
-
-    ws_wage = wb["노임단가"]
-    df_wage = st.session_state.get("최종_단가", pd.DataFrame())
-
-    if ws_wage.max_row > 1:
-        ws_wage.delete_rows(2, ws_wage.max_row)
-
-    for col_idx, col_name in enumerate(df_wage.columns.tolist(), start=1):
-        ws_wage.cell(row=1, column=col_idx, value=col_name)
-
-    for r, row in enumerate(df_wage.itertuples(index=False), start=2):
-        for c, val in enumerate(row, start=1):
-            ws_wage.cell(row=r, column=c, value=val)
-
-    ws_ins = wb["손해보험요율"]
-    df_ins = st.session_state.get("보험요율DF", pd.DataFrame())
-
-    if ws_ins.max_row > 1:
-        ws_ins.delete_rows(2, ws_ins.max_row)
-
-    for col_idx, col_name in enumerate(df_ins.columns.tolist(), start=1):
-        ws_ins.cell(row=1, column=col_idx, value=col_name)
-
-    for r, row in enumerate(df_ins.itertuples(index=False), start=2):
-        for c, val in enumerate(row, start=1):
-            ws_ins.cell(row=r, column=c, value=val)
-
+    # 4) 완성된 파일을 BytesIO 로 읽어서 반환
     buf = BytesIO()
-    wb.save(buf)
+    with open(tmp.name, "rb") as f:
+        buf.write(f.read())
     buf.seek(0)
     return buf
 
@@ -228,7 +226,7 @@ with tab_갑지:
     st.write(f"**발주기관:** {발주기관}")
 
     if "도급예정액" in st.session_state and st.session_state["도급예정액"] > 0:
-        excel_buf = build_cover_excel("template.xlsx")
+        excel_buf = build_excel_overlay("template.xlsx")
         st.download_button(
             label="⬇️ 갑지(Excel) 다운로드",
             data=excel_buf,
