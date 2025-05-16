@@ -6,6 +6,99 @@ import shutil
 from openpyxl import load_workbook
 import datetime as dt
 
+import sqlite3
+from pathlib import Path
+
+DB_PATH = Path("visits.db")
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur  = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS visits (
+    timestamp TEXT
+)
+""")
+conn.commit()
+
+def record_visit():
+    now = dt.datetime.now().isoformat()
+    cur.execute("INSERT INTO visits (timestamp) VALUES (?)", (now,))
+    conn.commit()
+
+def get_today_count():
+    today = dt.date.today().isoformat()
+    cur.execute(
+        "SELECT COUNT(*) FROM visits WHERE substr(timestamp,1,10)=?",
+        (today,)
+    )
+    return cur.fetchone()[0]
+
+def get_total_count():
+    cur.execute("SELECT COUNT(*) FROM visits")
+    return cur.fetchone()[0]
+
+if not st.session_state.get("visit_recorded", False):
+    record_visit()
+    st.session_state["visit_recorded"] = True
+
+st.sidebar.markdown(f"👀 오늘 누적 방문 수: **{get_today_count()}** 회")
+st.sidebar.markdown(f"🕒 전체 누적 방문 수: **{get_total_count()}** 회")
+
+난이도_map = {
+    "도시공원": [
+        "단순 (소공원·묘지공원·보행자 전용도로·광장·도시공원 내 시설 교체사업)",
+        "보통 (국가도시공원·근린공원·체육공원·수변공원·도시농업공원·유원지·공공공지·광장(재생사업))",
+        "복잡1 (어린이공원·문화공원·역사공원·방재공원)",
+        "복잡2 (도시공원(재생사업))",
+    ],
+    "공동주택 및 대지의 조경": [
+        "보통 (공동주택 조경)",
+        "복잡1 (주택정원·건축물 조경·옥상조경(옥상정원))",
+        "복잡2 (실내조경(실내정원))",
+    ],
+    "녹지 및 도시숲": [
+        "단순 (완충 녹지·가로변 녹지·가로수·경관숲)",
+        "보통 (연결 녹지·경관 녹지·유휴지 녹화·마을숲·유아숲체험원)",
+        "복잡 (가로변 녹지(정원형)·학교숲·도시숲)",
+    ],
+    "주제형 사업": [
+        "단순 (야영장·둘레길·하천 경관 개선, 생태통로, 숲길조성)",
+        "보통 (테마시설 조성·관광지·관광지 활성화 사업·가로 환경개선 등)",
+        "복잡 (관광단지·동물원·골프장·스키장·2종 이상 복합 사업)",
+    ],
+}
+
+성격_coeffs = {
+    "도시공원":             1.0,
+    "공동주택 및 대지의 조경": 1.1,
+    "녹지 및 도시숲":        0.8,
+    "주제형 사업":           1.2,
+}
+
+# ── 계산용: 대상지 성격별 난이도계수 α₃ ──
+난이도_coeffs = {
+    "도시공원": {
+        "단순": 0.9,
+        "보통": 1.0,
+        "복잡1": 1.1,
+        "복잡2": 1.2,
+    },
+    "공동주택 및 대지의 조경": {
+        "보통": 1.0,
+        "복잡1": 1.1,
+        "복잡2": 1.2,
+    },
+    "녹지 및 도시숲": {
+        "단순": 0.9,
+        "보통": 1.0,
+        "복잡": 1.1,
+    },
+    "주제형 사업": {
+        "단순": 0.9,
+        "보통": 1.0,
+        "복잡": 1.1,
+    },
+}
+
 def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
     # 1) 템플릿 파일을 안전하게 복사
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
@@ -15,7 +108,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
     # 2) openpyxl 로 '갑지' 시트만 직접 값 채우기
     wb = load_workbook(tmp.name)
     ws_cover = wb["갑지"]
-    ws_cover["D10"].value = st.session_state.get("공사명", "")
+    ws_cover["D10"].value = st.session_state.get("용역명", "")
     ws_cover["G22"].value = st.session_state.get("발주기관명", "")
     raw = st.session_state.get("도급예정액", 0)
     ws_cover["G20"].value = f"{int(raw//1000)*1000:,} 원"
@@ -37,7 +130,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
                 sheet_name="내역서",
                 index=False,
                 header=False,    # 템플릿의 1행 헤더 아래부터 덮어쓰기
-                startrow=1
+                startrow=2
             )
 
         # B) 투입인원 및 내역
@@ -48,7 +141,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
                 sheet_name="투입인원 및 내역",
                 index=False,
                 header=False,
-                startrow=1
+                startrow=2
             )
 
         # C) 투입인원수 산정기준
@@ -59,7 +152,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
                 sheet_name="투입인원수 산정기준",
                 index=False,
                 header=False,
-                startrow=1
+                startrow=2
             )
 
         # D) 노임단가
@@ -70,7 +163,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
                 sheet_name="노임단가",
                 index=False,
                 header=False,
-                startrow=1
+                startrow=2
             )
 
         # E) 손해보험요율
@@ -81,7 +174,7 @@ def build_excel_overlay(template_path="template.xlsx") -> BytesIO:
                 sheet_name="손해보험요율",
                 index=False,
                 header=False,
-                startrow=1
+                startrow=2
             )
 
     # 4) 완성된 파일을 BytesIO 로 읽어서 반환
@@ -127,8 +220,8 @@ with tab_기초입력:
 
     st.header("기초입력")
 
-    공사명 = st.text_input("공사명", value=st.session_state.get("공사명", "")) 
-    st.session_state["공사명"] = 공사명
+    용역명 = st.text_input("용역명", value=st.session_state.get("용역명", "")) 
+    st.session_state["용역명"] = 용역명
 
     발주기관명 = st.text_input("발주기관명", value=st.session_state.get("발주기관명", ""))
     st.session_state["발주기관명"] = 발주기관명
@@ -141,7 +234,6 @@ with tab_기초입력:
             "기본설계",
             "실시설계",
             "기본 및 실시설계",
-            "BF 예비인증"
         ]
         current = st.session_state.get("설계유형", "기본설계")
         index = options.index(current) if current in options else 0
@@ -178,11 +270,17 @@ with tab_기초입력:
     )
     st.session_state["대상지_성격"] = 대상지_성격
 
-    난이도 = st.selectbox("업무 난이도",
-                    ["단순", "보통", "복잡"],
-                    index=(["단순","보통","복잡"]
-                           .index(st.session_state.get("난이도","보통"))))
-    st.session_state["난이도"] = 난이도
+    options_nd = 난이도_map.get(대상지_성격, ["단순","보통","복잡"])
+    prev_nd    = st.session_state.get("난이도", options_nd[0])
+    if prev_nd not in options_nd:
+        prev_nd = options_nd[0]
+
+    난이도 = st.selectbox(
+        "업무 난이도",
+        options_nd,
+        index=options_nd.index(prev_nd),
+        key="난이도"
+    )
 
     전단계_활용 = st.checkbox(
         "기본계획 등 설계에 활용할 전 단계 성과물이 있습니까?", 
@@ -190,9 +288,9 @@ with tab_기초입력:
     )
     st.session_state["전단계_활용"] = 전단계_활용
 
-    if st.button("🔄  입력값 모두 초기화", help="공사명·면적 등 기초입력과 계산 결과를 지웁니다."):
+    if st.button("🔄  입력값 모두 초기화", help="용역명·면적 등 기초입력과 계산 결과를 지웁니다."):
         reset_keys = [
-            "공사명", "발주기관명",
+            "용역명", "발주기관명",
             "선택공종", "설계유형",
             "면적", "대상지_성격", "난이도", "전단계_활용",
             "기준계산결과", "직접인건비", "도급예정액",
@@ -211,7 +309,7 @@ with tab_갑지:
     st.markdown(f"##### 날짜: {today}")
 
     st.markdown(
-        f"<h2 style='text-align:center;'>{공사명}</h2>",
+        f"<h2 style='text-align:center;'>{용역명}</h2>",
         unsafe_allow_html=True
     )
 
@@ -230,7 +328,7 @@ with tab_갑지:
         st.download_button(
             label="⬇️ 갑지(Excel) 다운로드",
             data=excel_buf,
-            file_name=f"{st.session_state['공사명']}_갑지.xlsx",
+            file_name=f"{st.session_state['용역명']}_갑지.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
@@ -324,7 +422,7 @@ with tab_투입인원및내역:
 
                 값 = st.number_input(
                    라벨,
-                   min_value=1,
+                   min_value=0,
                    step=1,
                    value=int(st.session_state.get(f"기간_{idx}", 기본값)),
                    key=f"기간_=L_{idx}"
@@ -344,7 +442,7 @@ with tab_투입인원및내역:
 
                 값 = st.number_input(
                    라벨,
-                   min_value=1,
+                   min_value=0,
                    step=1,
                    value=int(st.session_state.get(f"기간_{idx}", 기본값)),
                    key=f"기간_=L_{idx}"
@@ -404,10 +502,9 @@ with tab_산정기준:
     설계유형     = st.session_state.get("설계유형")
     대상_면적    = st.session_state.get("면적", 0)
     성격        = st.session_state.get("대상지_성격")
-    난이도       = st.session_state.get("난이도")
     전단계_활용  = st.session_state.get("전단계_활용", False)
 
-    if 공종 == "조경" and 설계유형 in ["기본설계", "실시설계", "기본 및 실시설계", "BF 예비인증"]:
+    if 공종 == "조경" and 설계유형 in ["기본설계", "실시설계", "기본 및 실시설계"]:
         기준표 = load_기준인원수(설계유형).copy()
         for 직급 in 직급리스트:
             기준표[직급] = pd.to_numeric(기준표[직급], errors="coerce").fillna(0.0)
@@ -415,8 +512,10 @@ with tab_산정기준:
             환산계수 = (대상_면적 / 5000) ** 0.7
         else:
             환산계수 = (대상_면적 / 5000) ** 0.4
-        성격계수 = {"도시공원":1.0, "공동주택 및 대지의 조경":1.1, "녹지 및 도시숲":0.8, "주제형 사업":1.2}
-        난이도계수 = {"단순":0.9, "보통":1.0, "복잡":1.1}
+        full_nd_label = st.session_state.get("난이도", "")
+        diff_key = full_nd_label.split()[0] if full_nd_label else ""
+        a2 = 성격_coeffs.get(성격, 1.0)
+        a3 = 난이도_coeffs.get(성격, {}).get(diff_key, 1.0)
 
         for 직급 in 직급리스트:
             계산값, 계산식 = [], []
@@ -429,12 +528,14 @@ with tab_산정기준:
                     v *= 환산계수; parts.append(f"{환산계수:.3f}")
 
                 if row["보정계수(α₂, α₃)"] == "적용" and row["업무구분"] not in ["조사", "기술협의"]:
-                    a2 = 성격계수.get(성격,1.0); a3 = 난이도계수.get(난이도,1.0)
-                    v *= a2 * a3; parts += [f"{a2:.3f}", f"{a3:.3f}"]
+                    v *= a2 * a3
+                    parts.append(f"{a2:.3f}")  # 성격계수
+                    parts.append(f"{a3:.3f}")  # 난이도계수
+
 
                 if 전단계_활용:
                     first_token = str(row["업무구분"]).strip().split()[0]
-                    if first_token.startswith("2.1"):        # 2.1, 2.1.1, 2.1.2 … 모두 포함
+                    if first_token.startswith("2.1"):        
                         v *= 0.7
                         parts.append("0.700")
 
@@ -443,7 +544,8 @@ with tab_산정기준:
             기준표[직급] = 계산값
             기준표[f"{직급}_계산식"] = 계산식
 
-        기준표 = 기준표.fillna("")  
+        기준표 = 기준표.fillna("") 
+
         for 직급 in 직급리스트:
             calc_col = f"{직급}_계산식"
             if calc_col in 기준표.columns:
