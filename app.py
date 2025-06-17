@@ -5,6 +5,7 @@ import tempfile
 import shutil
 from openpyxl import load_workbook
 import datetime as dt
+from docxtpl import DocxTemplate
 
 
 # ─── 공통 로직: 노임단가 & 손해보험요율 로드 ───
@@ -514,6 +515,23 @@ def run_조경():
 def run_환경영향평가대행():
     st.title("🌱 환경영향평가 대행 비용 산출 프로그램")
 
+   # ─── 과업지시서 DOCX 생성 헬퍼 ───
+    def generate_directive_docx():
+        tpl = DocxTemplate("template_directive.docx")
+        context = {
+            "용역명":     st.session_state.get("용역명_env", ""),
+            "발주기관명": st.session_state.get("발주기관명_env", ""),
+            "날짜":       dt.date.today().strftime("%Y-%m-%d"),
+            "과업대상지":   st.session_state.get("과업대상지_env", ""),
+            "면적":       f"{st.session_state.get('면적_env', 0):,.0f}㎡",
+            "과업기간":   f"{st.session_state.get('과업기간_env', 0)}일",
+        }
+        tpl.render(context)
+        buf = BytesIO()
+        tpl.save(buf)
+        buf.seek(0)
+        return buf
+
     def build_환경_excel(template_path="template_env.xlsx") -> BytesIO:
         """
         'template_env.xlsx' 복사 후
@@ -649,21 +667,21 @@ def run_환경영향평가대행():
     with tab_기초입력:
         st.header("기초입력")
 
-        # 1) 용역명_env
+        # 용역명_env
         st.text_input(
             "용역명",
             value=st.session_state.get("용역명_env", ""),
             key="용역명_env",
         )
 
-        # 2) 발주기관명_env
+        # 발주기관명_env
         st.text_input(
             "발주기관명",
             value=st.session_state.get("발주기관명_env", ""),
             key="발주기관명_env",
         )
 
-        # 3) 설계유형_env 선택
+        # 설계유형_env 선택
         env_options = ["소규모 환경영향평가 대행"]
         current_env = st.session_state.get("설계유형_env", env_options[0])
         idx_env = env_options.index(current_env) if current_env in env_options else 0
@@ -674,13 +692,31 @@ def run_환경영향평가대행():
             key="설계유형_env",
         )
 
-        # 4) 대상 면적_env 입력
+
+        # 과업대상지_env (신규)
+        st.text_input(
+            "과업대상지",
+            value=st.session_state.get("과업대상지_env", ""),
+            key="과업대상지_env",
+        )
+
+        # 대상 면적_env 입력
         st.number_input(
             "대상 면적 (㎡)",
             min_value=0.0,
             step=10.0,
             value=st.session_state.get("면적_env", 0.0),
             key="면적_env",
+        )
+
+       # ── 과업기간 입력란 ──
+        st.number_input(
+            "과업기간 (일수)",
+            min_value=0,
+            step=1,
+            value=st.session_state.get("과업기간_env", 0),
+            help="예: 90 → 90일",
+            key="과업기간_env",
         )
 
         st.markdown("보정계수를 산정하기 위한 추가 질문")
@@ -721,23 +757,24 @@ def run_환경영향평가대행():
             unsafe_allow_html=True,
         )
 
-        if 도급예정액_env <= 0:
-            st.info("먼저 ‘내역서’ 탭에서 **산출 완료✅** 버튼을 눌러 금액을 확정하세요.")
-        else:
-            표시_용역비_env = int(도급예정액_env // 1000) * 1000
-            st.write(f"**용역비:** {표시_용역비_env:,.0f} 원")
+        if "도급예정액_env" in st.session_state and st.session_state["도급예정액_env"] > 0:
+            # 과업지시서 DOCX 다운로드 버튼
+            docx_buf = generate_directive_docx()
+            st.download_button(
+                label="📄 과업지시서(.docx) 다운로드",
+                data=docx_buf,
+                file_name=f"{용역명_env}_과업지시서.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
-        st.write(f"**발주기관:** {발주기관명_env}")
-
-        if 도급예정액_env > 0:
+            # 환경영향평가 내역서(Excel) 다운로드 버튼
             excel_buf = build_환경_excel("template_env.xlsx")
-            if excel_buf is not None:
-                st.download_button(
-                    label="⬇️ 환경영향평가 내역서(Excel) 다운로드",
-                    data=excel_buf,
-                    file_name=f"{용역명_env}_환경영향평가_내역서.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            st.download_button(
+                label="⬇️ 환경영향평가 내역서(Excel) 다운로드",
+                data=excel_buf,
+                file_name=f"{용역명_env}_환경영향평가_내역서.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         else:
             st.caption("※ 산출 완료 후 버튼이 활성화됩니다.")
 
